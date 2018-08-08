@@ -1,0 +1,127 @@
+\documentclass{grattan}
+
+\title{Title}
+\author{Author}
+
+\GrattanReportNumber{0}
+
+\begin{document}
+<<knitrOpts, include=FALSE>>=
+library(knitr)
+@
+
+<<grattanCharts-setup, include=FALSE>>=
+library(grattanCharts)
+setup_knitr_for_grattex()
+@
+
+<<loadPackages>>=
+library(data.table)
+library(grattan)
+library(fst)
+library(hutils)
+library(magrittr)
+library(ggplot2)
+library(scales)
+library(viridis)
+@
+
+<<MBS_Benefits>>=
+MBS <- fst::read_fst("../data-raw/fst/mbs-benefits.fst",
+                     as.data.table = TRUE)
+MBS[, BENPAID := as.double(BENPAID / 100)]
+MBS[, BENPAID := BENPAID * SAMPLEWEIGHT]
+patient <- fread("~/../MBS/SAMPLE_PIN_LOOKUP.csv")
+setkeyv(patient, key(MBS))
+@
+
+<<>>=
+if ("YOS" %notin% names(MBS)) {
+  stopifnot(hasName(MBS, "DOS"))
+  MBS[, c("YOS", "MOS") := list(year(.BY[[1L]]), month(.BY[[1L]])), by = "DOS"]
+}
+
+
+totalBenefit_by_YOS_PIN <-
+  MBS[, .(totalBenefit = sum(BENPAID)), keyby = c("PIN", "YOS")]
+@
+
+<<realTotalBenefit_by_YOB>>=
+realTotalBenefit_by_YOB <-
+  totalBenefit_by_YOS_PIN %>%
+  .[, realTotalBenefit := totalBenefit * cpi_inflator(from_fy = yr2fy(.BY[[1]]),
+                                                      to_fy = "2015-16",
+                                                      # else can't use early years
+                                                      adjustment = "none"),
+    by = "YOS"] %>%
+  .[, .(totBenefit = sum(realTotalBenefit),
+        min_YOS = min(YOS),
+        max_YOS = max(YOS)),
+    keyby = "PIN"] %>%
+  patient[., on = "PIN"]
+@
+
+<<avgBenefit_by_YOS_YOB>>=
+avgBenefit_by_YOS_YOB <-
+  totalBenefit_by_YOS_PIN[patient, on = "PIN"] %>%
+  .[, .(totalBenefit = sum(totalBenefit),
+        avgBenefit = mean(totalBenefit),
+        N = .N),
+    keyby = c("YOB", "YOS")] %>%
+  .[YOS >= YOB] %>%
+  .[, cpi_inflation := cpi_inflator(from_fy = yr2fy(YOS),
+                                    to_fy = "2015-16",
+                                    adjustment = "none")] %>%
+  .[, realTotalBenefit := cpi_inflation * totalBenefit] %>%
+  .[, realAvgBenefit := cpi_inflation * avgBenefit] %>%
+  .[, Age := YOS - YOB]
+@
+
+<<>>=
+avgBenefit_by_YOS_YOB %>%
+  # Strange instance
+  .[YOS != 1984L] %>%
+  .[order(YOB, YOS)] %>%
+  ggplot(aes(x = Age, y = realAvgBenefit, color = YOS, group = YOB)) +
+  geom_line(size = 1.2) +
+  scale_color_viridis() +
+  # scale_y_continuous(labels = function(x) paste0("$", x / 1e9, "bn")) +
+  theme_dark()
+@
+
+<<avgMBS-benefits-by-YOS-AgeGroup>>=
+avgBenefit_by_YOS_YOB %>%
+  .[YOS != 1984L] %>%
+  .[Age >= 18L] %>%
+  .[, AgeGroup := age_grouper(Age)] %>%
+  .[, .(realAvgBenefit = mean(realAvgBenefit)), keyby = .(AgeGroup, YOS)] %>%
+  .[, y := realAvgBenefit / first(realAvgBenefit), keyby = "AgeGroup"] %>%
+  ggplot(aes(x = YOS,
+             y = y,
+             group = AgeGroup,
+             color = AgeGroup)) +
+  geom_line(size = 1.2) +
+  scale_color_viridis(discrete = TRUE) +
+  theme_dark()
+@
+
+<<totalBenefit-by-YOS-AgeGroup>>=
+avgBenefit_by_YOS_YOB %>%
+  .[YOS != 1984L] %>%
+  .[Age >= 18L] %>%
+  .[, AgeGroup := age_grouper(Age)] %>%
+  .[, .(realTotalBenefit = mean(realTotalBenefit)), keyby = .(AgeGroup, YOS)] %>%
+  .[, y := realTotalBenefit / first(realTotalBenefit), keyby = "AgeGroup"] %>%
+  ggplot(aes(x = YOS,
+             y = y,
+             group = AgeGroup,
+             color = AgeGroup)) +
+  geom_line(size = 1.2) +
+  scale_color_viridis(discrete = TRUE) +
+  theme_dark()
+@
+
+
+
+\end{document}
+
